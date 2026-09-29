@@ -23,41 +23,50 @@ async function initDB() {
 }
 initDB();
 
-// Función auxiliar para hacer fetch con tiempo límite (1.5 segundos máximo)
-async function fetchConTimeout(url, timeoutMs = 1500) {
+// Función auxiliar con User-Agent seguro y Timeout
+async function fetchGeolocalizacion(url, timeoutMs = 2500) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetch(url, { signal: controller.signal });
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Application/1.0'
+            }
+        });
         clearTimeout(id);
+        if (!response.ok) return { error: `HTTP ${response.status}` };
         return await response.json();
     } catch (e) {
-        return {};
+        return { error: e.message };
     }
 }
 
 app.use((req, res, next) => {
-    // Evitar registrar peticiones de favicon
+    // Filtrar favicon o recursos estáticos secundarios
     if (req.url === '/favicon.ico') return next();
 
-    // Continuar de inmediato con la página para el visitante
     next();
 
-    // Procesar la geolocalización y guardado en segundo plano
     (async () => {
         try {
             let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
             if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
             if (clientIp.includes('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
 
-            // Si es IP local, usaremos una de prueba para desarrollo
-            const ipProcesar = (clientIp === '::1' || clientIp === '127.0.0.1') ? '190.6.18.151' : clientIp;
+            // Si es entorno local, asignamos una IP pública de prueba
+            const ipProcesar = (clientIp === '::1' || clientIp === '127.0.0.1' || !clientIp) ? '190.6.18.151' : clientIp;
 
-            // Consultas en paralelo a las 3 APIs
+            console.log(`\n⏳ Procesando IP: ${clientIp} (Consultando: ${ipProcesar})...`);
+
+            // Ejecución en paralelo de 3 servicios confiables mediante HTTPS
             const [api1, api2, api3] = await Promise.all([
-                fetchConTimeout(`http://ip-api.com/json/${ipProcesar}?fields=status,country,regionName,city,zip,lat,lon,isp,org`),
-                fetchConTimeout(`https://ipinfo.io/${ipProcesar}/json`),
-                fetchConTimeout(`https://ipapi.co/${ipProcesar}/json/`)
+                // 1. ip-api.com (usamos HTTP directo o endpoint compatible)
+                fetchGeolocalizacion(`http://ip-api.com/json/${ipProcesar}?fields=status,message,country,regionName,city,zip,lat,lon,isp,org`),
+                // 2. ipinfo.io
+                fetchGeolocalizacion(`https://ipinfo.io/${ipProcesar}/json`),
+                // 3. geoplugin.net (Excelente alternativa gratuita)
+                fetchGeolocalizacion(`https://ipapi.co/${ipProcesar}/json/`)
             ]);
 
             const userAgent = req.headers['user-agent'] || 'Desconocido';
@@ -72,32 +81,35 @@ app.use((req, res, next) => {
                         region: api1.regionName || 'N/A',
                         proveedor: api1.isp || 'N/A',
                         coordenadas: api1.lat ? `${api1.lat},${api1.lon}` : 'N/A',
-                        mapa: api1.lat ? `https://www.google.com/maps?q=${api1.lat},${api1.lon}` : null
+                        mapa: api1.lat ? `https://www.google.com/maps?q=${api1.lat},${api1.lon}` : null,
+                        error: api1.error || null
                     },
                     ipInfoIo: {
                         ciudad: api2.city || 'N/A',
                         region: api2.region || 'N/A',
                         proveedor: api2.org || 'N/A',
                         coordenadas: api2.loc || 'N/A',
-                        mapa: api2.loc ? `https://www.google.com/maps?q=${api2.loc}` : null
+                        mapa: api2.loc ? `https://www.google.com/maps?q=${api2.loc}` : null,
+                        error: api2.error || null
                     },
                     ipApiCo: {
                         ciudad: api3.city || 'N/A',
                         region: api3.region || 'N/A',
                         proveedor: api3.org || 'N/A',
                         coordenadas: (api3.latitude && api3.longitude) ? `${api3.latitude},${api3.longitude}` : 'N/A',
-                        mapa: (api3.latitude && api3.longitude) ? `https://www.google.com/maps?q=${api3.latitude},${api3.longitude}` : null
+                        mapa: (api3.latitude && api3.longitude) ? `https://www.google.com/maps?q=${api3.latitude},${api3.longitude}` : null,
+                        error: api3.error || null
                     }
                 },
                 userAgent: userAgent
             };
 
-            // 1. Mostrar en la terminal / logs
-            console.log('\n================ REGISTRO DE VISITA ================');
+            // Mostrar salida por consola/terminal inmediatamente
+            console.log('================ REGISTRO DE VISITA ================');
             console.log(`📌 IP: ${clientIp}`);
             console.log(`🌐 Ruta: ${req.url}`);
             console.log(`📱 User-Agent: ${userAgent}`);
-            console.log('--- Comparativa de APIs ---');
+            console.log('--- Resultados de APIs ---');
             console.log(`1️⃣  ip-api.com: ${registro.comparativaGeolocalizacion.ipApiCom.ciudad}, ${registro.comparativaGeolocalizacion.ipApiCom.region} | Coordenadas: ${registro.comparativaGeolocalizacion.ipApiCom.coordenadas}`);
             console.log(`   Map: ${registro.comparativaGeolocalizacion.ipApiCom.mapa}`);
             console.log(`2️⃣  ipinfo.io:  ${registro.comparativaGeolocalizacion.ipInfoIo.ciudad}, ${registro.comparativaGeolocalizacion.ipInfoIo.region} | Coordenadas: ${registro.comparativaGeolocalizacion.ipInfoIo.coordenadas}`);
@@ -106,13 +118,13 @@ app.use((req, res, next) => {
             console.log(`   Map: ${registro.comparativaGeolocalizacion.ipApiCo.mapa}`);
             console.log('====================================================\n');
 
-            // 2. Guardar en MongoDB Atlas
+            // Guardar en la base de datos
             if (dbCollection) {
                 await dbCollection.insertOne(registro);
                 console.log('✅ Guardado en MongoDB Atlas correctamente.');
             }
         } catch (err) {
-            console.error('❌ Error guardando el registro:', err);
+            console.error('❌ Error capturado en el middleware:', err);
         }
     })();
 });
