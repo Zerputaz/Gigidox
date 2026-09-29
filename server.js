@@ -5,7 +5,7 @@ const app = express();
 
 app.use(express.json());
 
-// 1. Cadena de conexión a MongoDB Atlas
+// Cadena de conexión a MongoDB Atlas
 const mongoUri = "mongodb+srv://sebasfacherocruz_db_user:C2qZRyv6yv7FlQYr@cluster0.cusd2vd.mongodb.net/almaip?retryWrites=true&w=majority&appName=Cluster0";
 const client = new MongoClient(mongoUri);
 
@@ -23,13 +23,18 @@ async function initDB() {
 }
 initDB();
 
-// 2. DESACTIVAR CACHÉ (Evita códigos 304 y fuerza que el navegador vuelva a enviar la petición)
+// 1. ELIMINAR ETaG Y CACHÉ GLOBALMENTE (Previene respuestas 304)
+app.disable('etag'); // Desactiva la generación de validadores de caché de Express
+
 app.use((req, res, next) => {
-    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
     next();
 });
 
-// Función auxiliar para peticiones a APIs externas con tiempo límite
+// Función auxiliar para consultar las APIs externas con tiempo límite (2 segundos)
 async function consultarApi(url, timeoutMs = 2000) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -46,28 +51,28 @@ async function consultarApi(url, timeoutMs = 2000) {
     }
 }
 
-// 3. MIDDLEWARE DE REGISTRO DE IP Y GEOLOCALIZACIÓN
+// 2. MIDDLEWARE DE CAPTURA DE IP Y GEOLOCALIZACIÓN
 app.use(async (req, res, next) => {
-    // Filtrar archivos de assets para no duplicar registros en la BD
-    if (req.url === '/favicon.ico' || req.url.endsWith('.css') || req.url.endsWith('.js') || req.url.endsWith('.png') || req.url.endsWith('.jpg')) {
+    // Filtrar peticiones de favicons o archivos estáticos no primarios
+    if (req.url === '/favicon.ico' || req.url.endsWith('.css') || req.url.endsWith('.js') || req.url.endsWith('.png')) {
         return next();
     }
 
-    // Continuar de inmediato entregando la web al usuario
+    // Permitir que Express continúe entregando la página sin trabarse
     next();
 
-    // Procesar la captura y guardado en segundo plano
+    // Procesar la geolocalización y el guardado en segundo plano
     try {
         let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
         if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
         if (clientIp.includes('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
 
-        // IP de respaldo para pruebas locales en localhost
+        // IP de respaldo para pruebas en entorno local
         const ipProcesar = (clientIp === '::1' || clientIp === '127.0.0.1' || !clientIp) ? '190.6.18.151' : clientIp;
 
-        console.log(`\n⏳ [NUEVA VISITA DETECTADA] IP: ${clientIp} (Analizando: ${ipProcesar})`);
+        console.log(`\n⏳ [VISITA PROCESADA] IP: ${clientIp} | IP a geolocalizar: ${ipProcesar}`);
 
-        // Consultas en paralelo a las 3 APIs de geolocalización
+        // Consultas simultáneas a 3 APIs
         const [api1, api2, api3] = await Promise.all([
             consultarApi(`http://ip-api.com/json/${ipProcesar}?fields=status,country,regionName,city,zip,lat,lon,isp,org`),
             consultarApi(`https://ipinfo.io/${ipProcesar}/json`),
@@ -76,7 +81,6 @@ app.use(async (req, res, next) => {
 
         const userAgent = req.headers['user-agent'] || 'Desconocido';
 
-        // Construir el objeto estructurado
         const registro = {
             timestamp: new Date(),
             ip: clientIp,
@@ -107,31 +111,26 @@ app.use(async (req, res, next) => {
             userAgent: userAgent
         };
 
-        // Mostrar en los Deploy Logs de Railway
+        // Imprimir directamente en los Deploy Logs de Railway
         console.log('================ REGISTRO DE VISITA ================');
-        console.log(`📌 IP: ${clientIp}`);
+        console.log(`📌 IP Real: ${clientIp}`);
         console.log(`🌐 Ruta: ${req.url}`);
-        console.log(`📱 User-Agent: ${userAgent}`);
-        console.log('--- Comparativa de Ubicaciones ---');
-        console.log(`1️⃣  ip-api.com: ${registro.comparativaGeolocalizacion.ipApiCom.ciudad}, ${registro.comparativaGeolocalizacion.ipApiCom.region} | Coordenadas: ${registro.comparativaGeolocalizacion.ipApiCom.coordenadas}`);
-        console.log(`   Map: ${registro.comparativaGeolocalizacion.ipApiCom.mapa}`);
-        console.log(`2️⃣  ipinfo.io:  ${registro.comparativaGeolocalizacion.ipInfoIo.ciudad}, ${registro.comparativaGeolocalizacion.ipInfoIo.region} | Coordenadas: ${registro.comparativaGeolocalizacion.ipInfoIo.coordenadas}`);
-        console.log(`   Map: ${registro.comparativaGeolocalizacion.ipInfoIo.mapa}`);
-        console.log(`3️⃣  geoPlugin:  ${registro.comparativaGeolocalizacion.geoPlugin.ciudad}, ${registro.comparativaGeolocalizacion.geoPlugin.region} | Coordenadas: ${registro.comparativaGeolocalizacion.geoPlugin.coordenadas}`);
-        console.log(`   Map: ${registro.comparativaGeolocalizacion.geoPlugin.mapa}`);
+        console.log(`1️⃣  ip-api.com: ${registro.comparativaGeolocalizacion.ipApiCom.ciudad} | Coord: ${registro.comparativaGeolocalizacion.ipApiCom.coordenadas}`);
+        console.log(`2️⃣  ipinfo.io:  ${registro.comparativaGeolocalizacion.ipInfoIo.ciudad} | Coord: ${registro.comparativaGeolocalizacion.ipInfoIo.coordenadas}`);
+        console.log(`3️⃣  geoPlugin:  ${registro.comparativaGeolocalizacion.geoPlugin.ciudad} | Coord: ${registro.comparativaGeolocalizacion.geoPlugin.coordenadas}`);
         console.log('====================================================\n');
 
-        // Guardar en la colección de MongoDB
+        // Insertar en MongoDB
         if (dbCollection) {
             await dbCollection.insertOne(registro);
-            console.log('✅ Guardado con éxito en MongoDB Atlas.');
+            console.log('✅ Documento insertado con éxito en MongoDB Atlas.');
         }
     } catch (err) {
-        console.error('❌ Error guardando el registro:', err);
+        console.error('❌ Error registrando la visita:', err);
     }
 });
 
-// 4. ARCHIVOS ESTÁTICOS (Irá después para asegurar que el middleware de arriba capture la entrada)
+// 3. CARGA DE ARCHIVOS ESTÁTICOS (Irá al final para asegurar el paso previo por el middleware)
 app.use(express.static('public'));
 
 const PORT = process.env.PORT || 3000;
