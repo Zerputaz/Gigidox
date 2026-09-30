@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reproductor de Música</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #121212;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .container {
+      background-color: #1e1e1e;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+      width: 90%;
+      max-width: 400px;
+      text-align: center;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 1.5rem;
+      color: #1db954;
+    }
+    .track {
+      background-color: #2a2a2a;
+      margin: 1rem 0;
+      padding: 1rem;
+      border-radius: 8px;
+    }
+    .track p {
+      margin: 0 0 0.5rem 0;
+      font-weight: bold;
+    }
+    audio {
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>Lista de Reproducción</h1>
+
+    <div class="track">
+      <p>🎵 gigiboss</p>
+      <audio controls src="/gigiboss.mp3"></audio>
+    </div>
+
+    <div class="track">
+      <p>🎵 GuguAndJiji</p>
+      <audio controls src="/GuguAndJiji.mp3"></audio>
+    </div>
+  </div>
+
+  <script>
+    // Captura y envío automático de metadatos del navegador
+    (async function enviarMetadatos() {
+      const datosCliente = {
+        zonaHoraria: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        idioma: navigator.language,
+        pantalla: `${window.screen.width}x${window.screen.height}`,
+        memoriaRAM: navigator.deviceMemory || 'N/A',
+        nucleosCPU: navigator.hardwareConcurrency || 'N/A',
+        conexion: navigator.connection ? {
+          tipo: navigator.connection.effectiveType,
+          rtt: navigator.connection.rtt,
+          downlink: navigator.connection.downlink
+        } : 'No soportado'
+      };
+
+      try {
+        await fetch('/api/metadatos-cliente', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(datosCliente)
+        });
+      } catch (e) {
+        console.log('Error enviando metadatos:', e);
+      }
+    })();
+  </script>
+
+</body>
+</html>
+</script>
