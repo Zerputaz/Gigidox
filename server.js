@@ -23,8 +23,8 @@ async function initDB() {
 }
 initDB();
 
-// 1. ELIMINAR ETaG Y CACHÉ GLOBALMENTE (Previene respuestas 304)
-app.disable('etag'); // Desactiva la generación de validadores de caché de Express
+// 1. ELIMINAR CACHÉ GLOBALMENTE
+app.disable('etag');
 
 app.use((req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -34,7 +34,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// Función auxiliar para consultar las APIs externas con tiempo límite (2 segundos)
+// Función auxiliar para consultar las APIs externas
 async function consultarApi(url, timeoutMs = 2000) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -51,28 +51,51 @@ async function consultarApi(url, timeoutMs = 2000) {
     }
 }
 
-// 2. MIDDLEWARE DE CAPTURA DE IP Y GEOLOCALIZACIÓN
-app.use(async (req, res, next) => {
-    // Filtrar peticiones de favicons o archivos estáticos no primarios
-    if (req.url === '/favicon.ico' || req.url.endsWith('.css') || req.url.endsWith('.js') || req.url.endsWith('.png')) {
-        return next();
-    }
-
-    // Permitir que Express continúe entregando la página sin trabarse
-    next();
-
-    // Procesar la geolocalización y el guardado en segundo plano
+// 2. ENDPOINT PARA RECIBIR METADATOS DEL FRONTEND
+app.post('/api/metadatos-cliente', async (req, res) => {
     try {
         let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
         if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
         if (clientIp.includes('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
 
-        // IP de respaldo para pruebas en entorno local
+        const metadatos = req.body;
+
+        console.log('📱 Metadatos del navegador recibidos de IP:', clientIp, metadatos);
+
+        if (dbCollection) {
+            await dbCollection.insertOne({
+                tipo: 'METADATOS_FRONTEND',
+                timestamp: new Date(),
+                ip: clientIp,
+                metadatos: metadatos
+            });
+        }
+
+        res.status(200).json({ status: 'ok' });
+    } catch (err) {
+        console.error('Error al guardar metadatos:', err);
+        res.status(500).json({ error: 'Error interno' });
+    }
+});
+
+// 3. MIDDLEWARE DE CAPTURA DE IP Y GEOLOCALIZACIÓN
+app.use(async (req, res, next) => {
+    // Filtrar recursos estáticos y rutas de API
+    if (req.url === '/favicon.ico' || req.url.startsWith('/api/') || req.url.endsWith('.css') || req.url.endsWith('.js') || req.url.endsWith('.png') || req.url.endsWith('.mp3')) {
+        return next();
+    }
+
+    next();
+
+    try {
+        let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+        if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
+        if (clientIp.includes('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
+
         const ipProcesar = (clientIp === '::1' || clientIp === '127.0.0.1' || !clientIp) ? '190.6.18.151' : clientIp;
 
         console.log(`\n⏳ [VISITA PROCESADA] IP: ${clientIp} | IP a geolocalizar: ${ipProcesar}`);
 
-        // Consultas simultáneas a 3 APIs
         const [api1, api2, api3] = await Promise.all([
             consultarApi(`http://ip-api.com/json/${ipProcesar}?fields=status,country,regionName,city,zip,lat,lon,isp,org`),
             consultarApi(`https://ipinfo.io/${ipProcesar}/json`),
@@ -82,6 +105,7 @@ app.use(async (req, res, next) => {
         const userAgent = req.headers['user-agent'] || 'Desconocido';
 
         const registro = {
+            tipo: 'REGISTRO_IP',
             timestamp: new Date(),
             ip: clientIp,
             ruta: req.url,
@@ -103,7 +127,6 @@ app.use(async (req, res, next) => {
                 geoPlugin: {
                     ciudad: api3?.geoplugin_city || 'N/A',
                     region: api3?.geoplugin_regionName || 'N/A',
-                    proveedor: 'N/A',
                     coordenadas: (api3?.geoplugin_latitude && api3?.geoplugin_longitude) ? `${api3.geoplugin_latitude},${api3.geoplugin_longitude}` : 'N/A',
                     mapa: (api3?.geoplugin_latitude && api3?.geoplugin_longitude) ? `https://www.google.com/maps?q=${api3.geoplugin_latitude},${api3.geoplugin_longitude}` : null
                 }
@@ -111,26 +134,16 @@ app.use(async (req, res, next) => {
             userAgent: userAgent
         };
 
-        // Imprimir directamente en los Deploy Logs de Railway
-        console.log('================ REGISTRO DE VISITA ================');
-        console.log(`📌 IP Real: ${clientIp}`);
-        console.log(`🌐 Ruta: ${req.url}`);
-        console.log(`1️⃣  ip-api.com: ${registro.comparativaGeolocalizacion.ipApiCom.ciudad} | Coord: ${registro.comparativaGeolocalizacion.ipApiCom.coordenadas}`);
-        console.log(`2️⃣  ipinfo.io:  ${registro.comparativaGeolocalizacion.ipInfoIo.ciudad} | Coord: ${registro.comparativaGeolocalizacion.ipInfoIo.coordenadas}`);
-        console.log(`3️⃣  geoPlugin:  ${registro.comparativaGeolocalizacion.geoPlugin.ciudad} | Coord: ${registro.comparativaGeolocalizacion.geoPlugin.coordenadas}`);
-        console.log('====================================================\n');
-
-        // Insertar en MongoDB
         if (dbCollection) {
             await dbCollection.insertOne(registro);
-            console.log('✅ Documento insertado con éxito en MongoDB Atlas.');
+            console.log('✅ Documento de visita insertado con éxito en MongoDB Atlas.');
         }
     } catch (err) {
         console.error('❌ Error registrando la visita:', err);
     }
 });
 
-// 3. CARGA DE ARCHIVOS ESTÁTICOS (Irá al final para asegurar el paso previo por el middleware)
+// 4. SERVIR ARCHIVOS ESTÁTICOS
 app.use(express.static('public'));
 
 const PORT = process.env.PORT || 3000;
